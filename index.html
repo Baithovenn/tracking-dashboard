@@ -16,8 +16,9 @@ h2{color:#c9d1d9;margin-bottom:16px}
 .stat{padding:14px;background:#21262d;border-radius:8px;text-align:center}
 .stat-label{font-size:.75rem;color:#8b949e;text-transform:uppercase}
 .stat-val{font-size:1.5rem;font-weight:700;margin-top:4px}
-.legend{display:flex;gap:20px;justify-content:center;margin-top:10px;font-size:.8rem;color:#8b949e}
+.legend{display:flex;gap:20px;justify-content:center;margin-top:10px;font-size:.8rem;color:#8b949e;flex-wrap:wrap}
 .legend-dot{width:12px;height:12px;border-radius:3px;display:inline-block}
+.legend-line{width:20px;height:2px;display:inline-block;border-top:2px dashed #ff6384;margin-right:4px}
 </style>
 </head>
 <body>
@@ -25,11 +26,14 @@ h2{color:#c9d1d9;margin-bottom:16px}
 <p class="subtitle" id="updated">Lade Daten...</p>
 <div class="card">
 <h2>📅 Tagesübersicht</h2>
-<div style="max-height:420px"><canvas id="dailyChart"></canvas></div>
+<div style="max-height:440px"><canvas id="dailyChart"></canvas></div>
 <div class="legend">
-<span><span class="legend-dot" style="background:#ff6384"></span> Kcal</span>
+<span><span class="legend-dot" style="background:#4bc0c0"></span> Kcal ≤ Budget</span>
+<span><span class="legend-dot" style="background:#ff6384"></span> Kcal &gt; Budget</span>
 <span><span class="legend-dot" style="background:#36a2eb"></span> Stimmung</span>
 <span><span class="legend-dot" style="background:#ffce56"></span> Schlaf-Q</span>
+<span><span class="legend-line"></span> Budget 2.600</span>
+<span><span class="legend-dot" style="background:#9966ff;border-radius:50%"></span> Gewicht (kg)</span>
 </div>
 </div>
 <div class="card">
@@ -37,109 +41,95 @@ h2{color:#c9d1d9;margin-bottom:16px}
 <div class="stats" id="weekStats"></div>
 </div>
 <script>
-console.log('Dashboard startet...');
 var U='https://hgjkrmgrmurkwinnwmtl.supabase.co';
 var K='sb_publishable_UkXCdhCy6sQX7F9E5zQZow_AMCloji3';
-var H={apikey:K,Authorization:'Bearer '+K,'Content-Type':'application/json'};
-
-async function fetchSupabase(path) {
-  var url = U + '/rest/v1/' + path;
-  console.log('Fetch: ' + url);
-  var res = await fetch(url, {headers: H});
-  if (!res.ok) {
-    console.error('Fehler bei ' + path + ': ' + res.status + ' ' + res.statusText);
-    document.getElementById('updated').textContent = 'Fehler: ' + res.status + ' bei ' + path;
-    return [];
-  }
-  var data = await res.json();
-  console.log(path + ': ' + data.length + ' Einträge');
-  return data;
-}
-
+var H={apikey:K,Authorization:'Bearer '+K};
+var BUDGET=2600;
+async function f(p){var r=await fetch(U+'/rest/v1/'+p,{headers:H});return r.ok?r.json():[]}
 (async function(){
-try {
-  var tage = await fetchSupabase('tageszusammenfassung?select=*&order=datum');
-  var stimmung = await fetchSupabase('stimmung?select=*&order=datum');
-  var schlaf = await fetchSupabase('schlaf?select=*&order=datum');
+try{
+var tage=await f('tageszusammenfassung?select=*&order=datum');
+var stimmung=await f('stimmung?select=*&order=datum');
+var schlaf=await f('schlaf?select=*&order=datum');
+var gewicht=await f('gewicht?select=*&order=datum');
+if(tage.length===0){document.getElementById('updated').textContent='Keine Daten';return}
 
-  if (tage.length === 0) {
-    document.getElementById('updated').textContent = 'Keine Daten in der DB!';
-    return;
-  }
+var stimByDay={};
+for(var i=0;i<stimmung.length;i++){var s=stimmung[i];if(!stimByDay[s.datum])stimByDay[s.datum]=[];stimByDay[s.datum].push(s.wert)}
+var stimAvg={};
+for(var d in stimByDay){var sum=0;for(var j=0;j<stimByDay[d].length;j++)sum+=stimByDay[d][j];stimAvg[d]=Math.round(sum/stimByDay[d].length*10)/10}
 
-  // Stimmungs-Durchschnitt pro Tag
-  var stimByDay = {};
-  for (var i = 0; i < stimmung.length; i++) {
-    var s = stimmung[i];
-    if (!stimByDay[s.datum]) stimByDay[s.datum] = [];
-    stimByDay[s.datum].push(s.wert);
-  }
-  var stimAvg = {};
-  for (var d in stimByDay) {
-    var sum = 0;
-    for (var j = 0; j < stimByDay[d].length; j++) sum += stimByDay[d][j];
-    stimAvg[d] = Math.round(sum / stimByDay[d].length * 10) / 10;
-  }
+var gewByDay={};
+for(var i=0;i<gewicht.length;i++){gewByDay[gewicht[i].datum]=gewicht[i].gewicht_kg}
 
-  // Arrays bauen
-  var labels = [], kcal = [], mood = [], sleepQ = [];
-  for (var i = 0; i < tage.length; i++) {
-    var t = tage[i];
-    var d = new Date(t.datum);
-    labels.push(String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.');
-    kcal.push(t.kcal_gesamt || 0);
-    mood.push(stimAvg[t.datum] || null);
-    var sl = schlaf.find(function(x){return x.datum === t.datum});
-    sleepQ.push(sl ? sl.qualitaet : null);
-  }
-
-  console.log('Labels:', labels);
-  console.log('Kcal:', kcal);
-  console.log('Mood:', mood);
-  console.log('Sleep:', sleepQ);
-
-  document.getElementById('updated').textContent = 'Live · ' + new Date().toLocaleString('de-DE');
-
-  // Chart
-  new Chart(document.getElementById('dailyChart'), {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [
-        {label:'Kcal',data:kcal,backgroundColor:'#ff6384',borderRadius:4,yAxisID:'y'},
-        {label:'Stimmung',data:mood,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1'},
-        {label:'Schlaf-Q',data:sleepQ,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1'}
-      ]
-    },
-    options: {
-      responsive: true,
-      aspectRatio: 2.2,
-      plugins: {legend:{display:false}},
-      scales: {
-        y: {position:'left',title:{display:true,text:'Kcal',color:'#ff6384'},grid:{color:'#21262d'},ticks:{color:'#8b949e'}},
-        y1: {position:'right',title:{display:true,text:'1-10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
-        x: {grid:{color:'#21262d'},ticks:{color:'#8b949e'}}
-      }
-    }
-  });
-
-  // Stats
-  var validMood = mood.filter(function(v){return v != null});
-  var validSleep = sleepQ.filter(function(v){return v != null});
-  var avgK = Math.round(kcal.reduce(function(a,b){return a+b},0) / kcal.length);
-  var avgM = validMood.length ? Math.round(validMood.reduce(function(a,b){return a+b},0)/validMood.length*10)/10 : '-';
-  var avgS = validSleep.length ? Math.round(validSleep.reduce(function(a,b){return a+b},0)/validSleep.length*10)/10 : '-';
-  var ok = avgK <= 2600;
-  document.getElementById('weekStats').innerHTML =
-    '<div class="stat"><div class="stat-label">Ø Kcal</div><div class="stat-val" style="color:#ff6384">'+avgK+'</div></div>' +
-    '<div class="stat"><div class="stat-label">Ø Stimmung</div><div class="stat-val" style="color:#36a2eb">'+avgM+'</div></div>' +
-    '<div class="stat"><div class="stat-label">Ø Schlaf-Q</div><div class="stat-val" style="color:#ffce56">'+avgS+'</div></div>' +
-    '<div class="stat"><div class="stat-label">Budget 2600</div><div class="stat-val" style="color:'+(ok?'#4bc0c0':'#ff6384')+'">'+(ok?'✅ Defizit':'🔴 Überschuss')+'</div></div>';
-
-} catch(err) {
-  console.error('CRASH:', err);
-  document.getElementById('updated').textContent = 'Fehler: ' + err.message;
+var labels=[],kcal=[],mood=[],sleepQ=[],gewVals=[],kcalColors=[];
+for(var i=0;i<tage.length;i++){
+  var t=tage[i],dt=new Date(t.datum);
+  labels.push(String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.');
+  var k=t.kcal_gesamt||0;kcal.push(k);
+  kcalColors.push(k<=BUDGET?'#4bc0c0':'#ff6384');
+  mood.push(stimAvg[t.datum]||null);
+  var sl=schlaf.find(function(x){return x.datum===t.datum});
+  sleepQ.push(sl?sl.qualitaet:null);
+  gewVals.push(gewByDay[t.datum]||null);
 }
+
+document.getElementById('updated').textContent='Live · '+new Date().toLocaleString('de-DE');
+
+// Budget-Line Daten
+var budgetLine=labels.map(function(){return BUDGET});
+
+var datasets=[
+  {type:'bar',label:'Kcal',data:kcal,backgroundColor:kcalColors,borderRadius:4,yAxisID:'y',order:1},
+  {type:'bar',label:'Stimmung',data:mood,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1',order:1},
+  {type:'bar',label:'Schlaf-Q',data:sleepQ,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1',order:1},
+  {type:'line',label:'Budget 2.600',data:budgetLine,borderColor:'#ff6384',borderDash:[6,4],borderWidth:2,pointRadius:0,fill:false,yAxisID:'y',order:0}
+];
+
+// Gewicht-Linie nur wenn Daten da
+var hasWeight=gewVals.some(function(v){return v!=null});
+if(hasWeight){
+  datasets.push({type:'line',label:'Gewicht kg',data:gewVals,borderColor:'#9966ff',backgroundColor:'#9966ff',borderWidth:2.5,pointRadius:4,pointBackgroundColor:'#9966ff',fill:false,yAxisID:'y2',order:0,tension:0.3});
+}
+
+var scales={
+  y:{position:'left',title:{display:true,text:'Kcal',color:'#ff6384'},grid:{color:'#21262d'},ticks:{color:'#8b949e'}},
+  y1:{position:'right',title:{display:true,text:'1-10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
+  x:{grid:{color:'#21262d'},ticks:{color:'#8b949e'}}
+};
+if(hasWeight){
+  scales.y2={position:'right',title:{display:true,text:'kg',color:'#9966ff'},grid:{drawOnChartArea:false},ticks:{color:'#9966ff'}};
+}
+
+new Chart(document.getElementById('dailyChart'),{
+  type:'bar',
+  data:{labels:labels,datasets:datasets},
+  options:{
+    responsive:true,aspectRatio:2.2,
+    plugins:{
+      legend:{display:false},
+      tooltip:{callbacks:{label:function(ctx){if(ctx.datasetIndex===0)return'Kcal: '+ctx.raw;if(ctx.datasetIndex===1)return ctx.raw!=null?'Stimmung: '+ctx.raw+'/10':'';if(ctx.datasetIndex===2)return ctx.raw!=null?'Schlaf-Q: '+ctx.raw+'/10':'';if(ctx.datasetIndex===3)return'Budget: '+ctx.raw;if(ctx.datasetIndex===4)return'Gewicht: '+ctx.raw+' kg';return''}}}
+    },
+    scales:scales
+  }
+});
+
+// Stats
+var validMood=mood.filter(function(v){return v!=null});
+var validSleep=sleepQ.filter(function(v){return v!=null});
+var avgK=Math.round(kcal.reduce(function(a,b){return a+b},0)/kcal.length);
+var avgM=validMood.length?Math.round(validMood.reduce(function(a,b){return a+b},0)/validMood.length*10)/10:'-';
+var avgS=validSleep.length?Math.round(validSleep.reduce(function(a,b){return a+b},0)/validSleep.length*10)/10:'-';
+var totDef=kcal.reduce(function(a,b){return a+BUDGET-b},0);
+var ok=avgK<=BUDGET;
+var letztesG=null;
+for(var i=gewVals.length-1;i>=0;i--){if(gewVals[i]!=null){letztesG=gewVals[i];break}}
+document.getElementById('weekStats').innerHTML=
+  '<div class="stat"><div class="stat-label">Ø Kcal</div><div class="stat-val" style="color:#ff6384">'+avgK+'</div></div>'+
+  '<div class="stat"><div class="stat-label">Ø Stimmung</div><div class="stat-val" style="color:#36a2eb">'+avgM+'</div></div>'+
+  '<div class="stat"><div class="stat-label">Ø Schlaf-Q</div><div class="stat-val" style="color:#ffce56">'+avgS+'</div></div>'+
+  '<div class="stat"><div class="stat-label">'+'Σ Defizit</div><div class="stat-val" style="color:'+(totDef>=0?'#4bc0c0':'#ff6384')+'">'+totDef+' kcal</div></div>';
+}catch(err){document.getElementById('updated').textContent='Fehler: '+err.message}
 })();
 </script>
 </body>
