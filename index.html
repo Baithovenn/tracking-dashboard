@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tobias Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1117;color:#e1e4e8;font-family:system-ui,sans-serif;padding:20px}
+h1{text-align:center;color:#f0f6fc}
+.subtitle{text-align:center;color:#8b949e;margin-bottom:25px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;margin:0 auto 24px;max-width:1100px}
+h2{color:#c9d1d9;margin-bottom:16px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px}
+.stat{padding:14px;background:#21262d;border-radius:8px;text-align:center}
+.stat-label{font-size:.75rem;color:#8b949e;text-transform:uppercase}
+.stat-val{font-size:1.5rem;font-weight:700;margin-top:4px}
+.legend{display:flex;gap:20px;justify-content:center;margin-top:10px;font-size:.8rem;color:#8b949e}
+.legend-dot{width:12px;height:12px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<h1>📊 Tobias Dashboard</h1>
+<p class="subtitle" id="updated">Lade Daten...</p>
+<div class="card">
+<h2>📅 Tagesübersicht</h2>
+<div style="max-height:420px"><canvas id="dailyChart"></canvas></div>
+<div class="legend">
+<span><span class="legend-dot" style="background:#ff6384"></span> Kcal</span>
+<span><span class="legend-dot" style="background:#36a2eb"></span> Stimmung</span>
+<span><span class="legend-dot" style="background:#ffce56"></span> Schlaf-Q</span>
+</div>
+</div>
+<div class="card">
+<h2>📈 Schnitte</h2>
+<div class="stats" id="weekStats"></div>
+</div>
+<script>
+console.log('Dashboard startet...');
+var U='https://hgjkrmgrmurkwinnwmtl.supabase.co';
+var K='sb_publishable_UkXCdhCy6sQX7F9E5zQZow_AMCloji3';
+var H={apikey:K,Authorization:'Bearer '+K,'Content-Type':'application/json'};
+
+async function fetchSupabase(path) {
+  var url = U + '/rest/v1/' + path;
+  console.log('Fetch: ' + url);
+  var res = await fetch(url, {headers: H});
+  if (!res.ok) {
+    console.error('Fehler bei ' + path + ': ' + res.status + ' ' + res.statusText);
+    document.getElementById('updated').textContent = 'Fehler: ' + res.status + ' bei ' + path;
+    return [];
+  }
+  var data = await res.json();
+  console.log(path + ': ' + data.length + ' Einträge');
+  return data;
+}
+
+(async function(){
+try {
+  var tage = await fetchSupabase('tageszusammenfassung?select=*&order=datum');
+  var stimmung = await fetchSupabase('stimmung?select=*&order=datum');
+  var schlaf = await fetchSupabase('schlaf?select=*&order=datum');
+
+  if (tage.length === 0) {
+    document.getElementById('updated').textContent = 'Keine Daten in der DB!';
+    return;
+  }
+
+  // Stimmungs-Durchschnitt pro Tag
+  var stimByDay = {};
+  for (var i = 0; i < stimmung.length; i++) {
+    var s = stimmung[i];
+    if (!stimByDay[s.datum]) stimByDay[s.datum] = [];
+    stimByDay[s.datum].push(s.wert);
+  }
+  var stimAvg = {};
+  for (var d in stimByDay) {
+    var sum = 0;
+    for (var j = 0; j < stimByDay[d].length; j++) sum += stimByDay[d][j];
+    stimAvg[d] = Math.round(sum / stimByDay[d].length * 10) / 10;
+  }
+
+  // Arrays bauen
+  var labels = [], kcal = [], mood = [], sleepQ = [];
+  for (var i = 0; i < tage.length; i++) {
+    var t = tage[i];
+    var d = new Date(t.datum);
+    labels.push(String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.');
+    kcal.push(t.kcal_gesamt || 0);
+    mood.push(stimAvg[t.datum] || null);
+    var sl = schlaf.find(function(x){return x.datum === t.datum});
+    sleepQ.push(sl ? sl.qualitaet : null);
+  }
+
+  console.log('Labels:', labels);
+  console.log('Kcal:', kcal);
+  console.log('Mood:', mood);
+  console.log('Sleep:', sleepQ);
+
+  document.getElementById('updated').textContent = 'Live · ' + new Date().toLocaleString('de-DE');
+
+  // Chart
+  new Chart(document.getElementById('dailyChart'), {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {label:'Kcal',data:kcal,backgroundColor:'#ff6384',borderRadius:4,yAxisID:'y'},
+        {label:'Stimmung',data:mood,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1'},
+        {label:'Schlaf-Q',data:sleepQ,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1'}
+      ]
+    },
+    options: {
+      responsive: true,
+      aspectRatio: 2.2,
+      plugins: {legend:{display:false}},
+      scales: {
+        y: {position:'left',title:{display:true,text:'Kcal',color:'#ff6384'},grid:{color:'#21262d'},ticks:{color:'#8b949e'}},
+        y1: {position:'right',title:{display:true,text:'1-10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
+        x: {grid:{color:'#21262d'},ticks:{color:'#8b949e'}}
+      }
+    }
+  });
+
+  // Stats
+  var validMood = mood.filter(function(v){return v != null});
+  var validSleep = sleepQ.filter(function(v){return v != null});
+  var avgK = Math.round(kcal.reduce(function(a,b){return a+b},0) / kcal.length);
+  var avgM = validMood.length ? Math.round(validMood.reduce(function(a,b){return a+b},0)/validMood.length*10)/10 : '-';
+  var avgS = validSleep.length ? Math.round(validSleep.reduce(function(a,b){return a+b},0)/validSleep.length*10)/10 : '-';
+  var ok = avgK <= 2600;
+  document.getElementById('weekStats').innerHTML =
+    '<div class="stat"><div class="stat-label">Ø Kcal</div><div class="stat-val" style="color:#ff6384">'+avgK+'</div></div>' +
+    '<div class="stat"><div class="stat-label">Ø Stimmung</div><div class="stat-val" style="color:#36a2eb">'+avgM+'</div></div>' +
+    '<div class="stat"><div class="stat-label">Ø Schlaf-Q</div><div class="stat-val" style="color:#ffce56">'+avgS+'</div></div>' +
+    '<div class="stat"><div class="stat-label">Budget 2600</div><div class="stat-val" style="color:'+(ok?'#4bc0c0':'#ff6384')+'">'+(ok?'✅ Defizit':'🔴 Überschuss')+'</div></div>';
+
+} catch(err) {
+  console.error('CRASH:', err);
+  document.getElementById('updated').textContent = 'Fehler: ' + err.message;
+}
+})();
+</script>
+</body>
+</html>
