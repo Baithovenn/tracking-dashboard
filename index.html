@@ -30,21 +30,17 @@ h2{color:#c9d1d9;margin-bottom:16px}
 <p class="subtitle" id="updated">Lade Daten…</p>
 
 <div class="range-bar">
-<button class="range-btn active" onclick="loadDays(7)">7 Tage</button>
-<button class="range-btn" onclick="loadDays(30)">30 Tage</button>
-<button class="range-btn" onclick="loadDays(90)">90 Tage</button>
+<button class="range-btn" onclick="switchView(7)">7 Tage</button>
+<button class="range-btn" onclick="switchView(30)">30 Tage</button>
+<button class="range-btn" onclick="switchView(90)">90 Tage</button>
 </div>
 
 <div class="card">
 <h2>📅 Tagesübersicht</h2>
-<div style="max-height:440px"><canvas id="dailyChart"></canvas></div>
-<div class="legend">
-<span><span class="legend-dot" style="background:#4bc0c0"></span> Kcal bis 2.600</span>
-<span><span class="legend-dot" style="background:#ff6384"></span> Kcal über 2.600</span>
-<span><span class="legend-dot" style="background:#36a2eb"></span> Stimmung</span>
-<span><span class="legend-dot" style="background:#ffce56"></span> Schlaf-Stunden</span>
+<div style="max-height:460px"><canvas id="dailyChart"></canvas></div>
+<div class="legend" id="legendBox"></div>
 </div>
-</div>
+
 <div class="card">
 <h2>📈 Schnitte</h2>
 <div class="stats" id="weekStats"></div>
@@ -54,10 +50,9 @@ var U='https://hgjkrmgrmurkwinnwmtl.supabase.co';
 var K='sb_publishable_UkXCdhCy6sQX7F9E5zQZow_AMCloji3';
 var H={apikey:K,Authorization:'Bearer '+K};
 var BUDGET=2600;
-var CURRENT_DAYS=7;
 var chartInstance=null;
 
-var KcalTips=[], SleepTips=[], MoodTips=[];
+var KcalTips=[],SleepTips=[],MoodTips=[];
 
 async function f(p){var r=await fetch(U+'/rest/v1/'+p,{headers:H});return r.ok?r.json():[]}
 
@@ -66,11 +61,8 @@ function fmtDate(d){return String(d.getDate()).padStart(2,'0')+'.'+String(d.getM
 function toISODate(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function lastNDates(n){var r=[];var now=new Date();for(var i=n-1;i>=0;i--){var d=new Date(now);d.setDate(d.getDate()-i);r.push(toISODate(d))}return r}
 
-async function loadDays(n){
-  CURRENT_DAYS=n;
-  var btns=document.querySelectorAll('.range-btn');
-  for(var i=0;i<btns.length;i++)btns[i].classList.remove('active');
-  event.target.classList.add('active');
+async function switchView(n){
+  document.querySelectorAll('.range-btn').forEach(function(b,i){b.classList.toggle('active',i===(n===7?0:n===30?1:2))});
   await buildChart(n);
 }
 
@@ -78,7 +70,7 @@ async function buildChart(n){
   var dates=lastNDates(n);
   var from=dates[0],to=dates[dates.length-1];
 
-  // ALLE relevanten Rohdaten auf einmal laden
+  // Daten laden
   var [tage,mahlz,stimmung,schlaf,gewicht]=await Promise.all([
     f('tageszusammenfassung?select=*&datum=gte.'+from+'&datum=lte.'+to),
     f('mahlzeiten?select=*&datum=gte.'+from+'&datum=lte.'+to),
@@ -87,7 +79,7 @@ async function buildChart(n){
     f('gewicht?select=*&order=datum')
   ]);
 
-  // Mahlzeiten pro Tag aufsummieren
+  // Mahlzeiten summieren
   var mahlzByDay={};
   for(var i=0;i<mahlz.length;i++){
     var m=mahlz[i];
@@ -96,11 +88,11 @@ async function buildChart(n){
     if(m.beschreibung)mahlzByDay[m.datum].beschr.push(m.beschreibung);
   }
 
-  // Tageszusammenfassung Map (hat Vorrang für kcal_gesamt falls vorhanden)
+  // Tageszusammenfassung Map
   var tageMap={};
   for(var i=0;i<tage.length;i++){tageMap[tage[i].datum]=tage[i]}
 
-  // Stimmung pro Tag
+  // Stimmung
   var stimByDay={};
   for(var i=0;i<stimmung.length;i++){
     var s=stimmung[i];if(!s.datum)continue;
@@ -115,7 +107,7 @@ async function buildChart(n){
     stimAvg[d]=Math.round(sum/vv.length*10)/10;
   }
 
-  // Schlaf-Map
+  // Schlaf
   var schlafMap={};
   for(var i=0;i<schlaf.length;i++){schlafMap[schlaf[i].datum]=schlaf[i]}
 
@@ -129,68 +121,75 @@ async function buildChart(n){
   }
   var gewTrend=(letztesG&&vorletztesG)?Math.round((letztesG-vorletztesG)*10)/10:0;
 
-  // ── BAUE ARRAYS ──
-  var labels=[],kcalGreen=[],kcalRed=[];
+  // Arrays
+  var labels=[],kcalGreen=[],kcalRed=[],moodArr=[],sleepArr=[];
   KcalTips=[],MoodTips=[],SleepTips=[];
 
   for(var i=0;i<dates.length;i++){
     var d=dates[i];
     labels.push(fmtDate(new Date(d)));
 
-    // Kcal: Tageszusammenfassung hat Vorrang, sonst Live-Summe aus Mahlzeiten
     var t=tageMap[d];
     var k=0,tip='';
     if(t){k=t.kcal_gesamt||0;tip=k+' kcal'+(schoen(t.groesster_kalorientreiber)?' · '+schoen(t.groesster_kalorientreiber):'')}
-    else if(mahlzByDay[d]){k=mahlzByDay[d].kcal;tip='LIVE: '+k+' kcal · '+mahlzByDay[d].beschr.slice(0,3).join(', ')}
-    else{tip='noch keine Einträge'}
+    else if(mahlzByDay[d]){k=mahlzByDay[d].kcal;tip='LIVE '+k+' kcal · '+mahlzByDay[d].beschr.slice(0,3).join(', ')}
+    else{tip='keine Einträge'}
 
     if(k<=BUDGET){kcalGreen.push(k);kcalRed.push(0)}
     else{kcalGreen.push(BUDGET);kcalRed.push(k-BUDGET)}
     KcalTips.push(tip);
 
-    // Stimmung
-    var mv=stimAvg[d]||null;
-    // Heute: wenn keine Stimmung eingetragen, trotzdem null (kein Fake)
-    moodArr.push(mv);
-    if(mv!=null && stimByDay[d]){MoodTips.push(stimByDay[d].ausl.slice(0,2).join(' · '))}
-    else{MoodTips.push('')}
+    var mv=stimAvg[d]||null;moodArr.push(mv);
+    if(mv!=null&&stimByDay[d]){MoodTips.push(stimByDay[d].ausl.slice(0,2).join(' · '))}else{MoodTips.push('')}
 
-    // Schlaf
     var sl=schlafMap[d];
-    if(sl){
-      sleepArr.push(Number(sl.stunden)||0);
-      SleepTips.push((sl.qualitaet||'?')+'/10 Qualität'+(sl.notiz?' · '+sl.notiz:''));
-    }else{sleepArr.push(null);SleepTips.push('')}
+    if(sl){sleepArr.push(Number(sl.stunden)||0);SleepTips.push((sl.qualitaet||'?')+'/10 Qualität'+(sl.notiz?' · '+sl.notiz:''))}
+    else{sleepArr.push(null);SleepTips.push('')}
   }
 
-  document.getElementById('updated').textContent='Live · '+new Date().toLocaleString('de-DE')+' · letzte '+n+' Tage';
+  document.getElementById('updated').textContent='Live · '+new Date().toLocaleString('de-DE')+' · '+n+' Tage';
 
-  // Chart
-  if(chartInstance)chartInstance.destroy();
+  // Chart aufbauen
+  if(chartInstance){chartInstance.destroy();chartInstance=null}
+
+  var is90=(n>=90);
+  var ar=is90?3:(n>=30?2.8:2.2);
+
+  var datasets=[
+    {type:'bar',label:'Kcal Grün',data:kcalGreen,backgroundColor:'#4bc0c0',borderRadius:is90?2:4,borderSkipped:false,yAxisID:'y',stack:'kcal',order:1},
+    {type:'bar',label:'Kcal Rot',data:kcalRed,backgroundColor:'#ff6384',borderRadius:is90?{topLeft:2,topRight:2,bottomLeft:0,bottomRight:0}:{topLeft:4,topRight:4,bottomLeft:0,bottomRight:0},borderSkipped:'start',yAxisID:'y',stack:'kcal',order:1}
+  ];
+
+  if(is90){
+    // 90 Tage: Stimmung & Schlaf als LINIEN
+    datasets.push(
+      {type:'line',label:'Stimmung',data:moodArr,borderColor:'#36a2eb',backgroundColor:'#36a2eb33',borderWidth:2,pointRadius:1.5,pointBackgroundColor:'#36a2eb',fill:false,yAxisID:'y1',order:0,tension:0.3},
+      {type:'line',label:'Schlaf h',data:sleepArr,borderColor:'#ffce56',backgroundColor:'#ffce5633',borderWidth:2,pointRadius:1.5,pointBackgroundColor:'#ffce56',fill:false,yAxisID:'y1',order:0,tension:0.3}
+    );
+  } else {
+    // 7/30 Tage: Stimmung & Schlaf als BALKEN
+    datasets.push(
+      {type:'bar',label:'Stimmung',data:moodArr,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1',order:1},
+      {type:'bar',label:'Schlaf h',data:sleepArr,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1',order:1}
+    );
+  }
+
   chartInstance=new Chart(document.getElementById('dailyChart'),{
     type:'bar',
-    data:{
-      labels:labels,
-      datasets:[
-        {type:'bar',label:'Kcal Grün',data:kcalGreen,backgroundColor:'#4bc0c0',borderRadius:4,borderSkipped:false,yAxisID:'y',stack:'kcal',order:1},
-        {type:'bar',label:'Kcal Rot',data:kcalRed,backgroundColor:'#ff6384',borderRadius:{topLeft:4,topRight:4,bottomLeft:0,bottomRight:0},borderSkipped:'start',yAxisID:'y',stack:'kcal',order:1},
-        {type:'bar',label:'Stimmung',data:moodArr,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1',order:1},
-        {type:'bar',label:'Schlaf h',data:sleepArr,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1',order:1}
-      ]
-    },
+    data:{labels:labels,datasets:datasets},
     options:{
-      responsive:true,aspectRatio:n>30?3:2.2,
+      responsive:true,aspectRatio:ar,
       interaction:{mode:'index',intersect:false},
       plugins:{
         legend:{display:false},
         tooltip:{
-          filter:function(ctx){return ctx.datasetIndex<2?ctx.raw>0:ctx.raw!=null},
+          filter:function(ctx){if(ctx.datasetIndex===0)return ctx.raw>0;if(ctx.datasetIndex===1)return ctx.raw>0;return ctx.raw!=null},
           callbacks:{
             title:function(items){return items.length?items[0].label:''},
             label:function(ctx){
               var i=ctx.dataIndex;
-              if(ctx.datasetIndex===0){return ctx.raw>0?'🟢 Defizit: '+ctx.raw+' kcal':''}
-              if(ctx.datasetIndex===1){return ctx.raw>0?'🔴 Überschuss: '+ctx.raw+' kcal':''}
+              if(ctx.datasetIndex===0){return ctx.raw>0?'🟢 bis Budget: '+ctx.raw+' kcal':''}
+              if(ctx.datasetIndex===1){return ctx.raw>0?'🔴 drüber: '+ctx.raw+' kcal':''}
               if(ctx.datasetIndex===2){return ctx.raw!=null?'🧠 Stimmung: '+ctx.raw+'/10'+(MoodTips[i]?' · '+MoodTips[i]:''):'keine Daten'}
               if(ctx.datasetIndex===3){return ctx.raw!=null?'😴 Schlaf: '+ctx.raw+'h'+(SleepTips[i]?' · '+SleepTips[i]:''):'keine Daten'}
               return'';
@@ -201,10 +200,18 @@ async function buildChart(n){
       scales:{
         y:{position:'left',title:{display:true,text:'Kcal',color:'#8b949e'},grid:{color:'#21262d'},ticks:{color:'#8b949e'},stacked:true,beginAtZero:true},
         y1:{position:'right',title:{display:true,text:'1–10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
-        x:{grid:{color:'#21262d'},ticks:{color:'#8b949e'}}
+        x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxRotation:is90?90:0,font:is90?{size:8}:{size:11}}}
       }
     }
   });
+
+  // Legende
+  document.getElementById('legendBox').innerHTML=
+    '<span><span class="legend-dot" style="background:#4bc0c0"></span> 🍽️ Kcal ≤ 2.600</span>'+
+    '<span><span class="legend-dot" style="background:#ff6384"></span> 🍽️ Kcal &gt; 2.600</span>'+
+    '<span><span class="legend-dot" style="background:#36a2eb"></span> 🧠 Stimmung</span>'+
+    (is90?'<span><span class="legend-dot" style="background:#36a2eb;border-radius:50%;width:8px;height:8px"></span> 🧠 Stimmung (Linie)</span>':'')+
+    '<span><span class="legend-dot" style="background:#ffce56"></span> 😴 Schlaf'+(is90?' (Linie)':'')+'</span>';
 
   // Stats
   var allKcal=[],shownM=[],shownS=[],shownQ=[];
@@ -212,7 +219,7 @@ async function buildChart(n){
     var kk=kcalGreen[i]+kcalRed[i];
     if(kk>0)allKcal.push(kk);
     if(moodArr[i]!=null)shownM.push(moodArr[i]);
-    if(sleepArr[i]!=null){shownS.push(sleepArr[i]);var sl=schlafMap[dates[i]];if(sl&&sl.qualitaet!=null)shownQ.push(sl.qualitaet)}
+    if(sleepArr[i]!=null){shownS.push(sleepArr[i]);var sl2=schlafMap[dates[i]];if(sl2&&sl2.qualitaet!=null)shownQ.push(sl2.qualitaet)}
   }
   var avgK=allKcal.length?Math.round(allKcal.reduce(function(a,b){return a+b},0)/allKcal.length):0;
   var avgM=shownM.length?Math.round(shownM.reduce(function(a,b){return a+b},0)/shownM.length*10)/10:'-';
@@ -221,20 +228,14 @@ async function buildChart(n){
   var avgQ=shownQ.length?Math.round(shownQ.reduce(function(a,b){return a+b},0)/shownQ.length*10)/10:'-';
 
   document.getElementById('weekStats').innerHTML=
-    '<div class="stat"><div class="stat-label">Ø Kcal ('+n+'d)</div><div class="stat-val" style="color:#ff6384">'+avgK+'</div><div class="stat-sub">'+(totDef>=0?'✅ +'+totDef:'🔴 '+totDef)+' kcal</div></div>'+
-    '<div class="stat"><div class="stat-label">Ø Stimmung</div><div class="stat-val" style="color:#36a2eb">'+avgM+'</div></div>'+
-    '<div class="stat"><div class="stat-label">Ø Schlaf</div><div class="stat-val" style="color:#ffce56">'+avgSh+'h</div><div class="stat-sub">Quali Ø '+avgQ+'</div></div>'+
+    '<div class="stat"><div class="stat-label">🍽️ Ø Kcal ('+n+'d)</div><div class="stat-val" style="color:#ff6384">'+avgK+'</div><div class="stat-sub">'+(totDef>=0?'✅ +'+totDef:'🔴 '+totDef)+' kcal</div></div>'+
+    '<div class="stat"><div class="stat-label">🧠 Ø Stimmung</div><div class="stat-val" style="color:#36a2eb">'+avgM+'</div></div>'+
+    '<div class="stat"><div class="stat-label">😴 Ø Schlaf</div><div class="stat-val" style="color:#ffce56">'+avgSh+'h</div><div class="stat-sub">Quali Ø '+avgQ+'</div></div>'+
     '<div class="stat"><div class="stat-label">⚖️ Gewicht</div><div class="stat-val" style="color:'+(gewTrend<=0?'#4bc0c0':'#ff6384')+'">'+(letztesG?letztesG+' kg':'—')+'</div><div class="stat-sub">'+(letztesG?(gewTrend<=0?'▼ ':'▲ +')+Math.abs(gewTrend)+' kg':'—')+'</div></div>';
 }
 
-// Init
-var moodArr=[],sleepArr=[]; // muss global sein wegen Stats unten
-var _origBuildChart=buildChart;
-buildChart=async function(n){
-  // wrapper um moodArr/sleepArr von aussen sichtbar zu machen
-  await _origBuildChart(n);
-};
-loadDays(7);
+// Start
+switchView(7);
 </script>
 </body>
 </html>
