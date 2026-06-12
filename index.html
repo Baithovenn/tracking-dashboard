@@ -23,6 +23,7 @@ h2{color:#c9d1d9;margin-bottom:16px}
 .stat-sub{font-size:.7rem;color:#8b949e;margin-top:3px}
 .legend{display:flex;gap:20px;justify-content:center;margin-top:10px;font-size:.8rem;color:#8b949e;flex-wrap:wrap}
 .legend-dot{width:12px;height:12px;border-radius:3px;display:inline-block}
+.legend-line{width:20px;height:2px;display:inline-block;vertical-align:middle;margin-right:4px}
 </style>
 </head>
 <body>
@@ -37,7 +38,7 @@ h2{color:#c9d1d9;margin-bottom:16px}
 
 <div class="card">
 <h2>📅 Tagesübersicht</h2>
-<div style="max-height:460px"><canvas id="dailyChart"></canvas></div>
+<div style="max-height:480px"><canvas id="dailyChart"></canvas></div>
 <div class="legend" id="legendBox"></div>
 </div>
 
@@ -51,18 +52,65 @@ var K='sb_publishable_UkXCdhCy6sQX7F9E5zQZow_AMCloji3';
 var H={apikey:K,Authorization:'Bearer '+K};
 var BUDGET=2600;
 var chartInstance=null;
+var IS_90=false;
 
 var KcalTips=[],SleepTips=[],MoodTips=[];
 
 async function f(p){var r=await fetch(U+'/rest/v1/'+p,{headers:H});return r.ok?r.json():[]}
-
 function schoen(raw){if(!raw)return'';return raw.replace('Pastagericht (2130 kcal – 500g Nudeln, 95% der Tageskalorien)','Pasta-Bombe 500g Nudeln').replace('2 Plantbased Whopper (1200 kcal)','Burgerking-Offensive 2 Whopper').replace('Vegane Waffeln mit Marmelade (1.010 kcal)','Waffel-Flash 8 Stück').replace('2 Stücke Rhabarberkuchen am Abend (760 kcal)','Rhabarberkuchen x2')}
 function fmtDate(d){return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+'.'}
 function toISODate(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function lastNDates(n){var r=[];var now=new Date();for(var i=n-1;i>=0;i--){var d=new Date(now);d.setDate(d.getDate()-i);r.push(toISODate(d))}return r}
 
+// ── Plugin: Emojis über Balken / an Linien-Punkte ──
+var emojiPlugin={
+  id:'emojis',
+  afterDatasetsDraw:function(chart){
+    var ctx=chart.ctx;ctx.save();
+    ctx.textAlign='center';ctx.textBaseline='bottom';
+    var fs=IS_90?9:12;ctx.font=fs+'px system-ui';
+
+    if(IS_90){
+      // 90 Tage Linien: Emojis an Punkte
+      var dsMap={2:'🧠',3:'😴',4:'⚖️'};
+      // Kcal-Linie (idx 0): 🍽️
+      for(var dsIdx=0;dsIdx<chart.data.datasets.length;dsIdx++){
+        var ds=chart.data.datasets[dsIdx],meta=chart.getDatasetMeta(dsIdx);
+        var emoji=dsIdx===0?'🍽️':dsIdx===1?'':(dsMap[dsIdx]||'');
+        if(!emoji)continue;
+        for(var i=0;i<meta.data.length;i++){
+          if(ds.data[i]==null)continue;
+          var el=meta.data[i],x=el.x,y=el.y-(fs+5);
+          ctx.fillText(emoji,x,y);
+        }
+      }
+    }else{
+      // 7/30 Tage Balken
+      for(var dsIdx=2;dsIdx<chart.data.datasets.length;dsIdx++){
+        var ds=chart.data.datasets[dsIdx],meta=chart.getDatasetMeta(dsIdx);
+        var emoji=dsIdx===2?'🧠':'😴';
+        for(var i=0;i<meta.data.length;i++){
+          if(ds.data[i]==null)continue;
+          var el=meta.data[i],x=el.x,y=el.y-(fs+2);
+          ctx.fillText(emoji,x,y);
+        }
+      }
+      // 🍽️ auf Kcal-Balken
+      var m0=chart.getDatasetMeta(0),m1=chart.getDatasetMeta(1);
+      var d0=chart.data.datasets[0].data,d1=chart.data.datasets[1].data;
+      for(var i=0;i<m0.data.length;i++){
+        if((d0[i]||0)+(d1[i]||0)===0)continue;
+        var bar=m1.data[i],x=bar.x,y=bar.y-(fs+2);
+        ctx.fillText('🍽️',x,y);
+      }
+    }
+    ctx.restore();
+  }
+};
+
 async function switchView(n){
   document.querySelectorAll('.range-btn').forEach(function(b,i){b.classList.toggle('active',i===(n===7?0:n===30?1:2))});
+  IS_90=(n>=90);
   await buildChart(n);
 }
 
@@ -70,7 +118,6 @@ async function buildChart(n){
   var dates=lastNDates(n);
   var from=dates[0],to=dates[dates.length-1];
 
-  // Daten laden
   var [tage,mahlz,stimmung,schlaf,gewicht]=await Promise.all([
     f('tageszusammenfassung?select=*&datum=gte.'+from+'&datum=lte.'+to),
     f('mahlzeiten?select=*&datum=gte.'+from+'&datum=lte.'+to),
@@ -79,145 +126,151 @@ async function buildChart(n){
     f('gewicht?select=*&order=datum')
   ]);
 
-  // Mahlzeiten summieren
   var mahlzByDay={};
-  for(var i=0;i<mahlz.length;i++){
-    var m=mahlz[i];
-    if(!mahlzByDay[m.datum])mahlzByDay[m.datum]={kcal:0,beschr:[]};
-    mahlzByDay[m.datum].kcal+=(m.kcal_geschaetzt||0);
-    if(m.beschreibung)mahlzByDay[m.datum].beschr.push(m.beschreibung);
-  }
+  for(var i=0;i<mahlz.length;i++){var m=mahlz[i];if(!mahlzByDay[m.datum])mahlzByDay[m.datum]={kcal:0,beschr:[]};mahlzByDay[m.datum].kcal+=(m.kcal_geschaetzt||0);if(m.beschreibung)mahlzByDay[m.datum].beschr.push(m.beschreibung)}
 
-  // Tageszusammenfassung Map
   var tageMap={};
   for(var i=0;i<tage.length;i++){tageMap[tage[i].datum]=tage[i]}
 
-  // Stimmung
   var stimByDay={};
-  for(var i=0;i<stimmung.length;i++){
-    var s=stimmung[i];if(!s.datum)continue;
-    if(!stimByDay[s.datum])stimByDay[s.datum]={vals:[],ausl:[]};
-    stimByDay[s.datum].vals.push(s.wert);
-    if(s.ausloeser)stimByDay[s.datum].ausl.push(s.ausloeser);
-  }
+  for(var i=0;i<stimmung.length;i++){var s=stimmung[i];if(!s.datum)continue;if(!stimByDay[s.datum])stimByDay[s.datum]={vals:[],ausl:[]};stimByDay[s.datum].vals.push(s.wert);if(s.ausloeser)stimByDay[s.datum].ausl.push(s.ausloeser)}
   var stimAvg={};
-  for(var d in stimByDay){
-    var vv=stimByDay[d].vals,sum=0;
-    for(var j=0;j<vv.length;j++)sum+=vv[j];
-    stimAvg[d]=Math.round(sum/vv.length*10)/10;
-  }
+  for(var d in stimByDay){var vv=stimByDay[d].vals,sum=0;for(var j=0;j<vv.length;j++)sum+=vv[j];stimAvg[d]=Math.round(sum/vv.length*10)/10}
 
-  // Schlaf
   var schlafMap={};
   for(var i=0;i<schlaf.length;i++){schlafMap[schlaf[i].datum]=schlaf[i]}
 
-  // Gewicht
+  var gewMap={};
+  for(var i=0;i<gewicht.length;i++){var g=gewicht[i];if(g.gewicht_kg!=null)gewMap[g.datum]=g.gewicht_kg}
   var letztesG=null,vorletztesG=null;
-  for(var i=gewicht.length-1;i>=0;i--){
-    if(gewicht[i].gewicht_kg!=null){
-      if(!letztesG){letztesG=gewicht[i].gewicht_kg;continue}
-      if(!vorletztesG){vorletztesG=gewicht[i].gewicht_kg;break}
-    }
-  }
+  for(var i=gewicht.length-1;i>=0;i--){if(gewicht[i].gewicht_kg!=null){if(!letztesG){letztesG=gewicht[i].gewicht_kg;continue}if(!vorletztesG){vorletztesG=gewicht[i].gewicht_kg;break}}}
   var gewTrend=(letztesG&&vorletztesG)?Math.round((letztesG-vorletztesG)*10)/10:0;
 
-  // Arrays
-  var labels=[],kcalGreen=[],kcalRed=[],moodArr=[],sleepArr=[];
+  var labels=[],kcalVals=[],kcalGreen=[],kcalRed=[],moodArr=[],sleepArr=[],gewArr=[];
   KcalTips=[],MoodTips=[],SleepTips=[];
 
   for(var i=0;i<dates.length;i++){
-    var d=dates[i];
-    labels.push(fmtDate(new Date(d)));
-
+    var d=dates[i];labels.push(fmtDate(new Date(d)));
     var t=tageMap[d];
     var k=0,tip='';
     if(t){k=t.kcal_gesamt||0;tip=k+' kcal'+(schoen(t.groesster_kalorientreiber)?' · '+schoen(t.groesster_kalorientreiber):'')}
     else if(mahlzByDay[d]){k=mahlzByDay[d].kcal;tip='LIVE '+k+' kcal · '+mahlzByDay[d].beschr.slice(0,3).join(', ')}
     else{tip='keine Einträge'}
 
-    if(k<=BUDGET){kcalGreen.push(k);kcalRed.push(0)}
-    else{kcalGreen.push(BUDGET);kcalRed.push(k-BUDGET)}
+    kcalVals.push(k);
+    if(k<=BUDGET){kcalGreen.push(k);kcalRed.push(0)}else{kcalGreen.push(BUDGET);kcalRed.push(k-BUDGET)}
     KcalTips.push(tip);
 
     var mv=stimAvg[d]||null;moodArr.push(mv);
-    if(mv!=null&&stimByDay[d]){MoodTips.push(stimByDay[d].ausl.slice(0,2).join(' · '))}else{MoodTips.push('')}
+    MoodTips.push(mv!=null&&stimByDay[d]?stimByDay[d].ausl.slice(0,2).join(' · '):'');
 
     var sl=schlafMap[d];
-    if(sl){sleepArr.push(Number(sl.stunden)||0);SleepTips.push((sl.qualitaet||'?')+'/10 Qualität'+(sl.notiz?' · '+sl.notiz:''))}
+    if(sl){sleepArr.push(Number(sl.stunden)||0);SleepTips.push((sl.qualitaet||'?')+'/10'+(sl.notiz?' · '+sl.notiz:''))}
     else{sleepArr.push(null);SleepTips.push('')}
+
+    gewArr.push(gewMap[d]||null);
   }
 
   document.getElementById('updated').textContent='Live · '+new Date().toLocaleString('de-DE')+' · '+n+' Tage';
 
-  // Chart aufbauen
   if(chartInstance){chartInstance.destroy();chartInstance=null}
 
-  var is90=(n>=90);
-  var ar=is90?3:(n>=30?2.8:2.2);
+  var ar=IS_90?3:(n>=30?2.8:2.2);
+  var datasets,scales;
 
-  var datasets=[
-    {type:'bar',label:'Kcal Grün',data:kcalGreen,backgroundColor:'#4bc0c0',borderRadius:is90?2:4,borderSkipped:false,yAxisID:'y',stack:'kcal',order:1},
-    {type:'bar',label:'Kcal Rot',data:kcalRed,backgroundColor:'#ff6384',borderRadius:is90?{topLeft:2,topRight:2,bottomLeft:0,bottomRight:0}:{topLeft:4,topRight:4,bottomLeft:0,bottomRight:0},borderSkipped:'start',yAxisID:'y',stack:'kcal',order:1}
-  ];
-
-  if(is90){
-    // 90 Tage: Stimmung & Schlaf als LINIEN
-    datasets.push(
-      {type:'line',label:'Stimmung',data:moodArr,borderColor:'#36a2eb',backgroundColor:'#36a2eb33',borderWidth:2,pointRadius:1.5,pointBackgroundColor:'#36a2eb',fill:false,yAxisID:'y1',order:0,tension:0.3},
-      {type:'line',label:'Schlaf h',data:sleepArr,borderColor:'#ffce56',backgroundColor:'#ffce5633',borderWidth:2,pointRadius:1.5,pointBackgroundColor:'#ffce56',fill:false,yAxisID:'y1',order:0,tension:0.3}
-    );
+  if(IS_90){
+    // ═══════ 90 TAGE: ALLES LINIEN ═══════
+    var budgetLine=labels.map(function(){return BUDGET});
+    datasets=[
+      {type:'line',label:'Kcal',data:kcalVals,borderColor:'#ff6384',backgroundColor:'transparent',borderWidth:2.5,pointRadius:2,pointBackgroundColor:'#ff6384',fill:false,yAxisID:'y',order:0,tension:0.3},
+      {type:'line',label:'Budget',data:budgetLine,borderColor:'#ff638488',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false,yAxisID:'y',order:0},
+      {type:'line',label:'Stimmung',data:moodArr,borderColor:'#36a2eb',backgroundColor:'transparent',borderWidth:2,pointRadius:2,pointBackgroundColor:'#36a2eb',fill:false,yAxisID:'y1',order:0,tension:0.3},
+      {type:'line',label:'Schlaf',data:sleepArr,borderColor:'#ffce56',backgroundColor:'transparent',borderWidth:2,pointRadius:2,pointBackgroundColor:'#ffce56',fill:false,yAxisID:'y1',order:0,tension:0.3}
+    ];
+    scales={
+      y:{position:'left',title:{display:true,text:'Kcal',color:'#ff6384'},grid:{color:'#21262d'},ticks:{color:'#8b949e'},beginAtZero:true},
+      y1:{position:'right',title:{display:true,text:'1–10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
+      x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxRotation:90,font:{size:9}}}
+    };
+    if(gewArr.some(function(v){return v!=null})){
+      datasets.push({type:'line',label:'Gewicht',data:gewArr,borderColor:'#9966ff',backgroundColor:'transparent',borderWidth:2.5,pointRadius:2,pointBackgroundColor:'#9966ff',fill:false,yAxisID:'y2',order:0,tension:0.3});
+      scales.y2={position:'right',title:{display:true,text:'kg',color:'#9966ff'},grid:{drawOnChartArea:false},ticks:{color:'#9966ff'}};
+    }
   } else {
-    // 7/30 Tage: Stimmung & Schlaf als BALKEN
-    datasets.push(
+    // ═══════ 7/30 TAGE: BALKEN ═══════
+    datasets=[
+      {type:'bar',label:'kcalG',data:kcalGreen,backgroundColor:'#4bc0c0',borderRadius:4,borderSkipped:false,yAxisID:'y',stack:'kcal',order:1},
+      {type:'bar',label:'kcalR',data:kcalRed,backgroundColor:'#ff6384',borderRadius:{topLeft:4,topRight:4,bottomLeft:0,bottomRight:0},borderSkipped:'start',yAxisID:'y',stack:'kcal',order:1},
       {type:'bar',label:'Stimmung',data:moodArr,backgroundColor:'#36a2eb',borderRadius:4,yAxisID:'y1',order:1},
-      {type:'bar',label:'Schlaf h',data:sleepArr,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1',order:1}
-    );
+      {type:'bar',label:'Schlaf',data:sleepArr,backgroundColor:'#ffce56',borderRadius:4,yAxisID:'y1',order:1}
+    ];
+    scales={
+      y:{position:'left',title:{display:true,text:'Kcal',color:'#8b949e'},grid:{color:'#21262d'},ticks:{color:'#8b949e'},stacked:true,beginAtZero:true},
+      y1:{position:'right',title:{display:true,text:'1–10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
+      x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',font:{size:11}}}
+    };
   }
 
   chartInstance=new Chart(document.getElementById('dailyChart'),{
-    type:'bar',
-    data:{labels:labels,datasets:datasets},
+    type:'bar',data:{labels:labels,datasets:datasets},
+    plugins:[emojiPlugin],
     options:{
       responsive:true,aspectRatio:ar,
       interaction:{mode:'index',intersect:false},
       plugins:{
         legend:{display:false},
         tooltip:{
-          filter:function(ctx){if(ctx.datasetIndex===0)return ctx.raw>0;if(ctx.datasetIndex===1)return ctx.raw>0;return ctx.raw!=null},
+          filter:function(ctx){
+            if(IS_90)return ctx.datasetIndex!==1&&ctx.raw!=null;
+            if(ctx.datasetIndex===0)return ctx.raw>0;
+            if(ctx.datasetIndex===1)return ctx.raw>0;
+            return ctx.raw!=null;
+          },
           callbacks:{
             title:function(items){return items.length?items[0].label:''},
             label:function(ctx){
               var i=ctx.dataIndex;
-              if(ctx.datasetIndex===0){return ctx.raw>0?'🟢 bis Budget: '+ctx.raw+' kcal':''}
-              if(ctx.datasetIndex===1){return ctx.raw>0?'🔴 drüber: '+ctx.raw+' kcal':''}
-              if(ctx.datasetIndex===2){return ctx.raw!=null?'🧠 Stimmung: '+ctx.raw+'/10'+(MoodTips[i]?' · '+MoodTips[i]:''):'keine Daten'}
-              if(ctx.datasetIndex===3){return ctx.raw!=null?'😴 Schlaf: '+ctx.raw+'h'+(SleepTips[i]?' · '+SleepTips[i]:''):'keine Daten'}
+              if(IS_90){
+                if(ctx.datasetIndex===0)return'🍽️ '+ctx.raw+' kcal'+(KcalTips[i]&&ctx.raw>0?' · '+KcalTips[i].replace(/^\d+ kcal\s*·?\s*/,''):'');
+                if(ctx.datasetIndex===1)return'';
+                if(ctx.datasetIndex===2)return'🧠 Stimmung: '+ctx.raw+'/10'+(MoodTips[i]?' · '+MoodTips[i]:'');
+                if(ctx.datasetIndex===3)return'😴 Schlaf: '+ctx.raw+'h'+(SleepTips[i]?' · '+SleepTips[i]:'');
+                if(ctx.datasetIndex===4)return'⚖️ Gewicht: '+ctx.raw+' kg';
+              }else{
+                if(ctx.datasetIndex===0)return ctx.raw>0?'🟢 bis Budget: '+ctx.raw+' kcal':'';
+                if(ctx.datasetIndex===1)return ctx.raw>0?'🔴 drüber: '+ctx.raw+' kcal':'';
+                if(ctx.datasetIndex===2)return ctx.raw!=null?'🧠 Stimmung: '+ctx.raw+'/10'+(MoodTips[i]?' · '+MoodTips[i]:''):'';
+                if(ctx.datasetIndex===3)return ctx.raw!=null?'😴 Schlaf: '+ctx.raw+'h'+(SleepTips[i]?' · '+SleepTips[i]:''):'';
+              }
               return'';
             }
           }
         }
       },
-      scales:{
-        y:{position:'left',title:{display:true,text:'Kcal',color:'#8b949e'},grid:{color:'#21262d'},ticks:{color:'#8b949e'},stacked:true,beginAtZero:true},
-        y1:{position:'right',title:{display:true,text:'1–10',color:'#8b949e'},min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#8b949e',stepSize:1}},
-        x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxRotation:is90?90:0,font:is90?{size:8}:{size:11}}}
-      }
+      scales:scales
     }
   });
 
   // Legende
-  document.getElementById('legendBox').innerHTML=
-    '<span><span class="legend-dot" style="background:#4bc0c0"></span> 🍽️ Kcal ≤ 2.600</span>'+
-    '<span><span class="legend-dot" style="background:#ff6384"></span> 🍽️ Kcal &gt; 2.600</span>'+
-    '<span><span class="legend-dot" style="background:#36a2eb"></span> 🧠 Stimmung</span>'+
-    (is90?'<span><span class="legend-dot" style="background:#36a2eb;border-radius:50%;width:8px;height:8px"></span> 🧠 Stimmung (Linie)</span>':'')+
-    '<span><span class="legend-dot" style="background:#ffce56"></span> 😴 Schlaf'+(is90?' (Linie)':'')+'</span>';
+  if(IS_90){
+    document.getElementById('legendBox').innerHTML=
+      '<span><span class="legend-dot" style="background:#ff6384;border-radius:50%;width:8px;height:8px"></span> 🍽️ Kcal</span>'+
+      '<span><span class="legend-line" style="border-top:2px dashed #ff638488"></span> Budget 2.600</span>'+
+      '<span><span class="legend-dot" style="background:#36a2eb;border-radius:50%;width:8px;height:8px"></span> 🧠 Stimmung</span>'+
+      '<span><span class="legend-dot" style="background:#ffce56;border-radius:50%;width:8px;height:8px"></span> 😴 Schlaf</span>'+
+      (gewArr.some(function(v){return v!=null})?'<span><span class="legend-dot" style="background:#9966ff;border-radius:50%;width:8px;height:8px"></span> ⚖️ Gewicht</span>':'');
+  }else{
+    document.getElementById('legendBox').innerHTML=
+      '<span><span class="legend-dot" style="background:#4bc0c0"></span> 🍽️ Kcal ≤ 2.600</span>'+
+      '<span><span class="legend-dot" style="background:#ff6384"></span> 🍽️ Kcal &gt; 2.600</span>'+
+      '<span><span class="legend-dot" style="background:#36a2eb"></span> 🧠 Stimmung</span>'+
+      '<span><span class="legend-dot" style="background:#ffce56"></span> 😴 Schlaf</span>';
+  }
 
   // Stats
   var allKcal=[],shownM=[],shownS=[],shownQ=[];
   for(var i=0;i<dates.length;i++){
-    var kk=kcalGreen[i]+kcalRed[i];
-    if(kk>0)allKcal.push(kk);
+    if(kcalVals[i]>0)allKcal.push(kcalVals[i]);
     if(moodArr[i]!=null)shownM.push(moodArr[i]);
     if(sleepArr[i]!=null){shownS.push(sleepArr[i]);var sl2=schlafMap[dates[i]];if(sl2&&sl2.qualitaet!=null)shownQ.push(sl2.qualitaet)}
   }
@@ -234,7 +287,6 @@ async function buildChart(n){
     '<div class="stat"><div class="stat-label">⚖️ Gewicht</div><div class="stat-val" style="color:'+(gewTrend<=0?'#4bc0c0':'#ff6384')+'">'+(letztesG?letztesG+' kg':'—')+'</div><div class="stat-sub">'+(letztesG?(gewTrend<=0?'▼ ':'▲ +')+Math.abs(gewTrend)+' kg':'—')+'</div></div>';
 }
 
-// Start
 switchView(7);
 </script>
 </body>
