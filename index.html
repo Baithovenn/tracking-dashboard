@@ -213,7 +213,7 @@ header {
       <div class="stat-trend" id="sWeightT"></div>
     </div>
     <div class="stat" style="--accent:var(--kcal-over)">
-      <div class="stat-label">Defizit heute</div>
+      <div class="stat-label">Noch heute</div>
       <div class="stat-val" id="sDeficit">—</div>
       <div class="stat-trend" id="sDeficitT"></div>
     </div>
@@ -279,7 +279,8 @@ const SB_KEY = 'sb_publishable_UkXCdhCy6sQX7F9E5zQZow_AMCloji3';
 const { createClient } = supabase;
 const sb = createClient(SB_URL, SB_KEY);
 
-const BUDGET = 2600;
+let BUDGET = 2600;
+let SCHLAF_ZIEL = 8;
 let chartInstance = null;
 let currentView = 'woche';
 let weekOffset = 0;
@@ -349,10 +350,16 @@ async function doLogout() {
 
 // ── INIT ──
 async function init() {
+  const [tageszielRes, einstellRes] = await Promise.all([
+    sb.rpc('berechne_tagesziel'),
+    sb.from('einstellungen').select('schlaf_ziel').eq('id', 1).single()
+  ]);
+  if(tageszielRes.data != null) BUDGET = tageszielRes.data;
+  if(einstellRes.data?.schlaf_ziel != null) SCHLAF_ZIEL = Number(einstellRes.data.schlaf_ziel);
   loadStats();
   buildChart();
   loadFinance();
-  document.getElementById('dashSub').textContent = 'Live · '+new Date().toLocaleString('de-DE');
+  document.getElementById('dashSub').textContent = 'Live · '+new Date().toLocaleString('de-DE')+' · Ziel '+BUDGET+' kcal';
 }
 
 // ── STAT TILES ──
@@ -423,7 +430,7 @@ async function loadStats() {
   $('sWeightT').className   = 'stat-trend '+(gTrend!=null ? (gTrend<=0?'trend-pos':'trend-neg') : '');
 
   $('sDeficit').textContent  = kcalH ? (deficit>=0?'+':'')+deficit+' kcal' : '—';
-  $('sDeficitT').textContent = kcalH ? (deficit>=0?'Defizit':'Überschuss') : 'noch keine Daten';
+  $('sDeficitT').textContent = kcalH ? (deficit>=0?'Spielraum':'Über Ziel') : 'noch keine Daten';
   $('sDeficitT').className   = 'stat-trend '+(kcalH ? (deficit>=0?'trend-pos':'trend-neg') : '');
 }
 
@@ -479,50 +486,95 @@ async function buildWoche() {
   for(const s of schlafRows) sleepMap[s.datum]=s;
   for(const g of gewRows) if(g.gewicht_kg!=null) gewMap[g.datum]=g.gewicht_kg;
 
-  const labels=[], kcalOk=[], kcalOver=[], moodArr=[], sleepArr=[], gewArr=[];
+  const labels=[], kcalPct=[], kcalColors=[], moodPct=[], sleepPct=[], sleepColors=[], gewArr=[];
   const tooltipKcal=[], tooltipMood=[], tooltipSleep=[];
 
   for(const d of dates) {
     const iso = toISO(d);
     labels.push(fmtDate(d));
+
     const k = tageMap[iso]?.kcal_gesamt || mahlzMap[iso] || 0;
-    kcalOk.push(Math.min(k, BUDGET));
-    kcalOver.push(k>BUDGET ? k-BUDGET : 0);
+    const kp = k > 0 ? Math.round(k / BUDGET * 100) : null;
+    kcalPct.push(kp);
+    kcalColors.push((kp||0) > 100 ? 'rgba(255,45,120,0.85)' : 'rgba(0,229,255,0.72)');
     tooltipKcal.push(k ? k+' kcal'+(tageMap[iso]?.groesster_kalorientreiber?' · '+tageMap[iso].groesster_kalorientreiber:'') : 'keine Daten');
+
     const mv = moodMap[iso] ? moodMap[iso].reduce((a,b)=>a+b,0)/moodMap[iso].length : null;
-    moodArr.push(mv!=null ? Math.round(mv*10)/10 : null);
+    moodPct.push(mv!=null ? Math.round(mv/10*100) : null);
     tooltipMood.push(mv!=null ? mv.toFixed(1)+'/10' : '');
+
     const sl = sleepMap[iso];
-    sleepArr.push(sl?.stunden ? Number(sl.stunden) : null);
+    const sh = sl?.stunden ? Number(sl.stunden) : null;
+    const sp = sh!=null ? Math.round(sh/SCHLAF_ZIEL*100) : null;
+    sleepPct.push(sp);
+    sleepColors.push((sp||0) > 100 ? 'rgba(245,158,11,0.95)' : 'rgba(245,158,11,0.72)');
     tooltipSleep.push(sl ? sl.stunden+'h · Quali '+sl.qualitaet+'/10'+(sl.notiz?' · '+sl.notiz:'') : '');
+
     gewArr.push(gewMap[iso]||null);
   }
 
   const ctx = document.getElementById('mainChart').getContext('2d');
   if(chartInstance) { chartInstance.destroy(); chartInstance=null; }
 
+  const zielPlugin = {
+    id: 'zielLabel',
+    afterDraw(chart) {
+      const sc = chart.scales.y;
+      if(!sc) return;
+      const y = sc.getPixelForValue(100);
+      const c2 = chart.ctx;
+      c2.save();
+      c2.fillStyle = 'rgba(255,255,255,0.4)';
+      c2.font = '11px Inter, system-ui, sans-serif';
+      c2.textAlign = 'left';
+      c2.fillText('Ziel', chart.chartArea.right + 6, y + 4);
+      c2.restore();
+    }
+  };
+
+  const hasBarMetric = activeMetrics.kcal || activeMetrics.mood || activeMetrics.sleep;
   const datasets = [];
-  if(activeMetrics.kcal) {
-    datasets.push({type:'bar',label:'Kcal ≤ Budget',data:kcalOk,backgroundColor:'rgba(0,229,255,0.72)',borderRadius:8,borderSkipped:false,yAxisID:'y',stack:'kcal',order:1});
-    datasets.push({type:'bar',label:'Kcal > Budget',data:kcalOver,backgroundColor:'rgba(255,45,120,0.8)',borderRadius:{topLeft:8,topRight:8,bottomLeft:0,bottomRight:0},borderSkipped:'start',yAxisID:'y',stack:'kcal',order:1});
-  }
-  if(activeMetrics.mood) datasets.push({type:'bar',label:'Stimmung',data:moodArr,backgroundColor:'rgba(168,85,247,0.72)',borderRadius:8,yAxisID:'y1',order:1});
-  if(activeMetrics.sleep) datasets.push({type:'bar',label:'Schlaf',data:sleepArr,backgroundColor:'rgba(245,158,11,0.72)',borderRadius:8,yAxisID:'y1',order:1});
-  if(activeMetrics.weight) datasets.push({type:'line',label:'Gewicht',data:gewArr,borderColor:'#10b981',backgroundColor:'rgba(16,185,129,0.08)',borderWidth:2.5,pointRadius:5,pointBackgroundColor:'#10b981',fill:true,yAxisID:'y2',order:0,tension:0.4,spanGaps:true});
+  if(activeMetrics.kcal) datasets.push({
+    type:'bar', label:'Kcal', data:kcalPct,
+    backgroundColor:kcalColors, borderRadius:8, borderSkipped:false,
+    yAxisID:'y', order:1
+  });
+  if(activeMetrics.mood) datasets.push({
+    type:'bar', label:'Stimmung', data:moodPct,
+    backgroundColor:'rgba(168,85,247,0.72)', borderRadius:8,
+    yAxisID:'y', order:1
+  });
+  if(activeMetrics.sleep) datasets.push({
+    type:'bar', label:'Schlaf', data:sleepPct,
+    backgroundColor:sleepColors, borderRadius:8,
+    yAxisID:'y', order:1
+  });
+  if(hasBarMetric) datasets.push({
+    type:'line', label:'__ziel__', data:labels.map(()=>100),
+    borderColor:'rgba(255,255,255,0.22)', borderDash:[6,4], borderWidth:1.5,
+    pointRadius:0, fill:false, yAxisID:'y', order:0
+  });
+  if(activeMetrics.weight) datasets.push({
+    type:'line', label:'Gewicht', data:gewArr,
+    borderColor:'#10b981', backgroundColor:'rgba(16,185,129,0.08)',
+    borderWidth:2.5, pointRadius:5, pointBackgroundColor:'#10b981',
+    fill:true, yAxisID:'y2', order:0, tension:0.4, spanGaps:true
+  });
 
   chartInstance = new Chart(ctx, {
     type:'bar',
-    data:{labels,datasets},
+    data:{labels, datasets},
+    plugins:[zielPlugin],
     options:{
       responsive:true, aspectRatio:2.4,
-      interaction:{mode:'index',intersect:false},
+      interaction:{mode:'index', intersect:false},
       plugins:{
         legend:{display:false},
-        tooltip:{callbacks:{label:function(c){
+        tooltip:{callbacks:{label(c){
           const i=c.dataIndex, l=c.dataset.label, v=c.raw;
+          if(l==='__ziel__') return null;
           if(v==null||v===0) return null;
-          if(l==='Kcal ≤ Budget') return '🍽️ '+tooltipKcal[i];
-          if(l==='Kcal > Budget') return '🔴 +'+v+' über Budget';
+          if(l==='Kcal') return '🍽️ '+tooltipKcal[i];
           if(l==='Stimmung') return '🧠 '+tooltipMood[i];
           if(l==='Schlaf') return '😴 '+tooltipSleep[i];
           if(l==='Gewicht') return '⚖️ '+v+' kg';
@@ -530,10 +582,18 @@ async function buildWoche() {
         }}}
       },
       scales:{
-        x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#64748b'}},
-        y:{display:activeMetrics.kcal,position:'left',grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#64748b'},beginAtZero:true,stacked:true},
-        y1:{display:activeMetrics.mood||activeMetrics.sleep,position:'right',min:0,max:10,grid:{drawOnChartArea:false},ticks:{color:'#64748b',stepSize:2}},
-        y2:{display:activeMetrics.weight&&gewArr.some(v=>v!=null),position:'right',grid:{drawOnChartArea:false},ticks:{color:'#10b981'},offset:true}
+        x:{grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'#64748b'}},
+        y:{
+          display: hasBarMetric,
+          position:'left', min:0, max:150,
+          grid:{color:'rgba(255,255,255,0.04)'},
+          ticks:{color:'#64748b', callback: v => v+'%'}
+        },
+        y2:{
+          display: activeMetrics.weight && gewArr.some(v=>v!=null),
+          position:'right', grid:{drawOnChartArea:false},
+          ticks:{color:'#10b981'}, offset:true
+        }
       }
     }
   });
